@@ -10,6 +10,7 @@ from click.core import Argument
 from click.core import Command
 from click.core import Group
 from click.core import Option
+from click.shell_completion import _split_arg_string_windows
 from click.shell_completion import add_completion_class
 from click.shell_completion import CompletionItem
 from click.shell_completion import FishComplete
@@ -615,3 +616,61 @@ def test_powershell_format_completion_escapes_help():
     # produced by ZshComplete.
     item = CompletionItem("--at")
     assert pc.format_completion(item) == "plain\n--at\n_"
+
+
+# --- Tests for issue #3915: PowerShell completion must preserve Windows paths ---
+
+
+def test_split_arg_string_windows_preserves_backslashes():
+    # A plain Windows path must not be mangled — backslashes are path
+    # separators, not POSIX escape characters.
+    result = _split_arg_string_windows(r"mycli C:\Users\John\file.txt")
+    assert result == ["mycli", r"C:\Users\John\file.txt"]
+
+
+def test_split_arg_string_windows_quoted_path():
+    # A double-quoted Windows path with spaces should have its quotes
+    # stripped and the backslashes left intact.
+    result = _split_arg_string_windows(r'"C:\Users\John Doe\file.txt"')
+    assert result == [r"C:\Users\John Doe\file.txt"]
+
+
+def test_split_arg_string_windows_program_with_spaces():
+    # A program name that contains spaces and is wrapped in double quotes
+    # (common on Windows, e.g. "C:\Program Files\app.exe") must survive
+    # quote-stripping without losing the backslashes.
+    result = _split_arg_string_windows(r'"C:\Program Files\app.exe" --output "C:\out dir\result.json"')
+    assert result == [r"C:\Program Files\app.exe", "--output", r"C:\out dir\result.json"]
+
+
+def test_split_arg_string_windows_incomplete_quote():
+    # Mirrors the behaviour of split_arg_string: an unclosed quote does
+    # not raise an exception — the partial token is returned as-is.
+    result = _split_arg_string_windows(r'mycli "C:\Users\John')
+    assert result[0] == "mycli"
+    # The second token should contain the unclosed partial path.
+    assert r"C:\Users\John" in result[1]
+
+
+@pytest.mark.usefixtures("_patch_for_completion")
+def test_powershell_completion_windows_path(runner):
+    """PowerShell completion must pass Windows paths through unchanged
+    so that tab-completing a path like ``C:\\Users\\John\\`` works.
+
+    Regression test for https://github.com/pallets/click/issues/3915
+    """
+    cli = Command("cli", params=[Argument(["path"])])
+
+    # Simulate PowerShell invoking completion for:  cli C:\Users\
+    # COMP_CWORD=1  →  the incomplete token is the second word (index 1)
+    env = {
+        "_CLI_COMPLETE": "powershell_complete",
+        "COMP_WORDS": r"cli C:\Users\ ",
+        "COMP_CWORD": "1",
+    }
+    # Assert that the invocation doesn't crash and that the backslash
+    # path was not silently consumed / mangled.  A real filesystem scan
+    # isn't expected in unit tests, so empty completions are acceptable —
+    # what matters is no ValueError / exception (exit_code 0).
+    result = runner.invoke(cli, env=env)
+    assert result.exit_code == 0

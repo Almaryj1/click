@@ -523,7 +523,7 @@ class PowerShellComplete(ShellComplete):
     source_template: t.ClassVar[str] = _SOURCE_POWERSHELL
 
     def get_completion_args(self) -> tuple[list[str], str]:
-        cwords = split_arg_string(os.environ["COMP_WORDS"])
+        cwords = _split_arg_string_windows(os.environ["COMP_WORDS"])
         cword = int(os.environ["COMP_CWORD"])
         args = cwords[1:cword]
 
@@ -593,6 +593,41 @@ def get_completion_class(shell: str) -> type[ShellComplete] | None:
     :param shell: Name the class is registered under.
     """
     return _available_shells.get(shell)
+
+
+def _split_arg_string_windows(string: str) -> list[str]:
+    """Split an argument string for Windows PowerShell completion.
+
+    Unlike :func:`split_arg_string`, this uses ``posix=False`` so that
+    Windows backslash path separators (e.g. ``C:\\Users\\John\\file.txt``)
+    are preserved rather than being treated as POSIX escape characters.
+
+    Handles incomplete strings (missing closing quote) the same way as
+    :func:`split_arg_string` — the partial token is returned as-is.
+
+    :param string: String to split.
+    """
+    import shlex
+
+    lex = shlex.shlex(string, posix=False)
+    lex.whitespace_split = True
+    lex.commenters = ""
+    out: list[str] = []
+
+    try:
+        out.extend(lex)
+    except ValueError:
+        out.append(lex.token)
+
+    # posix=False keeps surrounding quotes on tokens; strip them so that
+    # a token like '"C:\\Users\\John"' becomes 'C:\\Users\\John'.
+    stripped: list[str] = []
+    for token in out:
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in ('"', "'"):
+            token = token[1:-1]
+        stripped.append(token)
+
+    return stripped
 
 
 def split_arg_string(string: str) -> list[str]:
